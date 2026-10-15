@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -23,7 +24,7 @@ logger = logging.getLogger("news_analyst_bot")
 
 
 def setup_logging() -> None:
-    """Логи уровня INFO в stdout и в файл bot.log."""
+    """Логи уровня INFO в stdout и в файл bot.log (с ротацией)."""
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -38,7 +39,12 @@ def setup_logging() -> None:
     root.addHandler(stream_handler)
 
     try:
-        file_handler = logging.FileHandler(config.LOG_PATH, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            config.LOG_PATH,
+            maxBytes=5_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
     except OSError as exc:  # например, нет прав на запись

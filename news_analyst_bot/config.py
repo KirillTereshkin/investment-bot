@@ -63,17 +63,58 @@ SOURCE_RETRIES = 2                           # число ПОВТОРНЫХ п�
 SOURCE_RETRY_DELAY_SEC = 3
 
 # ---------------------------------------------------------------------------
-# Котировки
+# Котировки (market/quotes.py)
 # ---------------------------------------------------------------------------
-# TODO(котировки): ЭТО ЗАГЛУШКИ. Здесь должен быть реальный источник данных,
-# например MOEX ISS (https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities/IMOEX.json)
-# и курс USD/RUB с ЦБ РФ (https://www.cbr-xml-daily.ru/daily_json.js) или с MOEX.
-# Заменить константы ниже на функцию get_market_snapshot() -> dict в scheduler/jobs.py
-# (там же помечено отдельным TODO).
+# Индекс MOEX (IMOEX) и цены тикеров берутся с MOEX ISS (без ключа, задержка ~15 мин).
+MOEX_ISS_BASE_URL = "https://iss.moex.com/iss"
+MOEX_ISS_INDEX_URL = (
+    "https://iss.moex.com/iss/engines/stock/markets/index/boards/SNDX/securities/IMOEX.json"
+)
+MOEX_ISS_SHARES_URL = "https://iss.moex.com/iss/engines/stock/markets/shares/boards/{board}/securities/{ticker}.json"
+MOEX_TICKER_BOARDS = ("TQBR", "TQTF")            # акции, затем фонды/ETF
+MOEX_ISS_TIMEOUT_SEC = 10
+MOEX_ISS_RETRIES = 2                             # число ПОВТОРНЫХ попыток
+MOEX_ISS_RETRY_DELAY_SEC = 3
+
+# Курсы ЦБ РФ (JSON-зеркало официального XML ЦБ, кодировка UTF-8)
+CBR_DAILY_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
+# Ключевая ставка ЦБ РФ: XML-эндпоинт + HTML-страница-резерв
+CBR_KEY_RATE_URL = "https://www.cbr.ru/scripts/XML_key_rate.asp"
+CBR_KEY_RATE_HTML_URL = "https://www.cbr.ru/hd_base/KeyRate/"
+CBR_KEY_RATE_CACHE_HOURS = 24                    # ставка меняется 8 раз в год — кэш на сутки
+
+# ---------------------------------------------------------------------------
+# Tinkoff Invest (только чтение, Часть 4)
+# ---------------------------------------------------------------------------
+# Токен read-only: не может выставлять или отменять ордера. Только через .env.
+TINKOFF_INVEST_TOKEN: str | None = os.getenv("TINKOFF_INVEST_TOKEN")
+TINKOFF_ACCOUNT_ID: str | None = os.getenv("TINKOFF_ACCOUNT_ID")   # необязательно: иначе первый брокерский
+TINKOFF_POSITIONS_CACHE_TTL_SEC = 300             # 5 минут
+TINKOFF_FIGI_CACHE_TTL_SEC = 604800               # FIGI→тикер практически не меняется (7 суток)
+TINKOFF_RETRIES = 2                               # число ПОВТОРНЫХ попыток
+TINKOFF_TIMEOUT_SEC = 15
+TINKOFF_RETRY_DELAY_SEC = 3
+
+# ---------------------------------------------------------------------------
+# Прогнозы (Часть 3)
+# ---------------------------------------------------------------------------
+PREDICTION_CHECK_HOUR = 21                        # ежедневная проверка идей, МСК
+PREDICTION_CHECK_MINUTE = 0
+PREDICTION_DEFAULT_HORIZON_DAYS = 30              # если горизонт идеи не распознан
+PREDICTION_FLAT_THRESHOLD_PCT = 1.0               # ±1% за период — это «боковик»
+PREDICTION_ACCURACY_WINDOW_DAYS = 30              # окно для команды /accuracy
+PREDICTION_TOP_TICKERS = 5                        # сколько тикеров показывать в /accuracy
+
+# ---------------------------------------------------------------------------
+# Fallback котировок (если API недоступен и в SQLite нет прошлых значений)
+# ---------------------------------------------------------------------------
+# fallback, если API недоступен
 KEY_RATE = 16.0
 MOEX_VALUE = 3200.0
 MOEX_CHANGE = 0.0
 USDRUB = 92.0
+CNYRUB = 12.5
+EURRUB = 93.0
 
 # ---------------------------------------------------------------------------
 # Прочее

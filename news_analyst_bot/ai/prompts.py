@@ -19,6 +19,9 @@ SYSTEM_PROMPT = """
 5. Не давай рекомендаций по инструментам, которых нет в Тинькофф Инвестициях.
 6. Указывай уверенность честно: если новость слабая — низкая уверенность. Не завышай. "Высокая уверенность" — максимум 1 идея за раз.
 7. Пиши кратко. Максимум — 4 идеи за раз. Если идей меньше — не добивай до четырёх.
+8. Если среди моих открытых позиций есть инструмент, на который новость может повлиять негативно — явно предупреди в отдельном поле "предупреждения_по_позициям".
+9. Если новость позитивна для инструмента, которого у меня нет, но он в списке доступных тикеров — можешь предложить как идею (как обычно).
+10. Не предлагай закрывать позиции. Только информируй о рисках.
 
 Формат ответа — строго JSON:
 {
@@ -35,6 +38,15 @@ SYSTEM_PROMPT = """
       "триггер_отмены": "что отменит идею"
     }
   ],
+  "предупреждения_по_позициям": [
+    {
+      "инструмент": "GAZP",
+      "позиция": "50 шт, -3.9%",
+      "риск": "негативно",
+      "обоснование": "Новость о снижении экспортных пошлин давит на бумагу",
+      "рекомендация": "наблюдать, не усреднять"
+    }
+  ],
   "урок_дня": "одна короткая фраза-наблюдение про рынок",
   "сигналов_нет": false
 }
@@ -44,8 +56,8 @@ USER_PROMPT_TEMPLATE = """
 Новости за период {window_start}–{window_end} МСК:
 
 {digest}
-
-Контекст: ключевая ставка ЦБ сейчас {key_rate}%, индекс MOEX {moex_value} ({moex_change}% за сутки), USD/RUB {usdrub}.
+{portfolio_block}
+Контекст: ключевая ставка ЦБ сейчас {key_rate}%, индекс MOEX {moex_value} ({moex_change}% за сутки), USD/RUB {usdrub}, CNY/RUB {cnyrub}, EUR/RUB {eurrub}.
 
 Дай прогноз по формату.
 """
@@ -64,15 +76,26 @@ def build_user_prompt(
     moex_value: float,
     moex_change: float,
     usdrub: float,
+    cnyrub: float | None = None,
+    eurrub: float | None = None,
+    portfolio_text: str = "",
 ) -> str:
-    """Собирает пользовательский промпт из шаблона + требование json-формата."""
+    """Собирает пользовательский промпт из шаблона + требование json-формата.
+
+    portfolio_text — блок «Мои открытые позиции» из broker.tinkoff (пустая строка,
+    если токен не настроен или позиций нет: тогда блок в промпт не попадает).
+    """
+    portfolio_block = f"\n{portfolio_text.strip()}\n" if portfolio_text and portfolio_text.strip() else ""
     prompt = USER_PROMPT_TEMPLATE.format(
         window_start=window_start,
         window_end=window_end,
         digest=digest,
+        portfolio_block=portfolio_block,
         key_rate=key_rate,
         moex_value=moex_value,
         moex_change=moex_change,
         usdrub=usdrub,
+        cnyrub=cnyrub if cnyrub is not None else "н/д",
+        eurrub=eurrub if eurrub is not None else "н/д",
     )
     return f"{prompt.strip()}\n\n{JSON_FORMAT_HINT}"

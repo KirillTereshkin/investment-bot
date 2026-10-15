@@ -176,6 +176,61 @@ def _format_deepseek(result: dict[str, Any]) -> str:
     )
 
 
+def _pct_text(value: Any) -> str:
+    """48.4 → «48%»; None → «—»."""
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.0f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _money(value: Any) -> str:
+    """45 230 ₽ (None → «—»)."""
+    if not isinstance(value, (int, float)):
+        return "—"
+    return f"{value:,.0f}".replace(",", " ") + " ₽"
+
+
+# Риски в блоке предупреждений по позициям (Часть 4)
+RISK_ICONS = {"негативно": "⚠️", "позитивно": "✅", "нейтрально": "➖"}
+
+
+def _format_position_warnings(parsed: dict[str, Any]) -> list[str]:
+    """Блок «⚠️ По вашим позициям» из поля «предупреждения_по_позициям».
+
+    Пустой список, если модель не вернула предупреждений — блок в сообщение не попадает.
+    """
+    warnings = parsed.get("предупреждения_по_позициям")
+    if not isinstance(warnings, list) or not warnings:
+        return []
+
+    lines: list[str] = []
+    for warning in warnings[:5]:
+        if not isinstance(warning, dict):
+            continue
+        instrument = short(warning.get("инструмент", "—"), 60) or "—"
+        risk = short(warning.get("риск", "риск"), 40) or "риск"
+        position = short(warning.get("позиция", ""), 60)
+        reason = short(warning.get("обоснование", ""), IDEA_TEXT_LIMIT)
+
+        head = f"• {instrument} — {risk}"
+        if position:
+            head += f" ({position})"
+        if reason:
+            head += f": {reason}"
+        lines.append(esc(head))
+
+        recommendation = short(warning.get("рекомендация", ""), IDEA_TEXT_LIMIT)
+        if recommendation:
+            lines.append(f"  Рекомендация: {esc(recommendation)}")
+
+    if not lines:
+        return []
+    return ["⚠️ <b>По вашим позициям:</b>", *lines]
+
+
 def _format_ideas(parsed: dict[str, Any]) -> list[str]:
     """Блок идей из ответа модели (максимум 4 идеи, как требует промпт)."""
     ideas = parsed.get("идеи")
@@ -240,6 +295,11 @@ def _format_body(result: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"📌 <b>Урок дня:</b> {esc(lesson)}")
 
+    warnings = _format_position_warnings(parsed)
+    if warnings:
+        lines.append("")
+        lines.extend(warnings)
+
     return "\n".join(lines)
 
 
@@ -262,6 +322,10 @@ def build_analysis_message(result: dict[str, Any]) -> str:
     blocks.append("")
     blocks.append(_format_deepseek(result))
     blocks.append("")
+    tinkoff_line = result.get("tinkoff_status")
+    if tinkoff_line:
+        blocks.append(esc(tinkoff_line))
+        blocks.append("")
     blocks.append(SEPARATOR)
     blocks.append(_format_body(result))
     blocks.append("")
@@ -299,6 +363,9 @@ def format_last_run(run: dict[str, Any] | None) -> str:
         f" | токенов: {tokens if tokens is not None else '—'}"
         f" | {duration_text}"
     )
+
+    if run.get("tinkoff_status"):
+        lines.append(esc(run["tinkoff_status"]))
 
     sources = _load_json(run.get("sources_status"), [])
     if isinstance(sources, list) and sources:
@@ -372,3 +439,110 @@ def format_startup_message() -> str:
         f"Следующий анализ в {next_run_hhmm()} МСК.\n"
         f"Расписание: {hours}."
     )
+
+
+def format_accuracy(stats: dict[str, Any]) -> str:
+    """Текст для команды /accuracy — точность прогнозов за N дней (Часть 3)."""
+    lines: list[str] = [f"📊 <b>Точность прогнозов за {stats.get('days', 30)} дней</b>", ""]
+
+    evaluated = int(stats.get("evaluated") or 0)
+    lines.append(f"Всего идей: {stats.get('total', 0)}")
+    lines.append(f"Отработано: {evaluated}")
+    lines.append(f"Точность общая: {_pct_text(stats.get('accuracy'))}")
+
+    if evaluated:
+        by_confidence: dict[str, dict[str, Any]] = stats.get("by_confidence") or {}
+        ordered = ["высокая", "средняя", "низкая"]
+        rest = [level for level in by_confidence if level not in ordered]
+        lines.append("")
+        lines.append("<b>По уверенности:</b>")
+        for level in [*ordered, *rest]:
+            bucket = by_confidence.get(level)
+            if not bucket:
+                continue
+            lines.append(
+                f"• {esc(level)}: {_pct_text(bucket.get('accuracy'))} "
+                f"({bucket.get('hit', 0)}/{bucket.get('evaluated', 0)})"
+            )
+
+        tickers: list[dict[str, Any]] = stats.get("by_ticker") or []
+        if tickers:
+            lines.append("")
+            lines.append("<b>Топ тикеров:</b>")
+            for item in tickers:
+                icon = "✅" if (item.get("accuracy") or 0) >= 50 else "❌"
+                lines.append(
+                    f"{icon} {esc(item.get('ticker'))} — {_pct_text(item.get('accuracy'))} "
+                    f"({item.get('hit', 0)}/{item.get('evaluated', 0)})"
+                )
+    else:
+        lines.append("")
+        lines.append("Пока нечего оценивать: ни одна идея ещё не отработала горизонт.")
+
+    if stats.get("watchlisted"):
+        lines.append("")
+        lines.append(f"👀 «Наблюдать» (в точность не входят): {stats['watchlisted']}")
+    if stats.get("no_entry_price"):
+        lines.append(f"❔ Без цены входа (не проверяются): {stats['no_entry_price']}")
+
+    lines.append("")
+    lines.append(f"⏳ Ожидают проверки: {stats.get('pending', 0)}")
+    return "\n".join(lines)
+
+
+def format_portfolio(snapshot: Any) -> str:
+    """Текст для команды /portfolio: снимок позиций Tinkoff без анализа.
+
+    snapshot — broker.tinkoff.PortfolioSnapshot (duck-typing, чтобы notifier не тянул SDK).
+    """
+    ok = bool(getattr(snapshot, "ok", False))
+    positions = getattr(snapshot, "positions", None) or []
+
+    lines: list[str] = ["💼 <b>Портфель Tinkoff</b>", "", esc(snapshot.status_text())]
+
+    if not ok:
+        if getattr(snapshot, "error", None):
+            lines.append(f"Причина: {esc(snapshot.error)}")
+        lines.append("")
+        lines.append("Работаем без контекста позиций — прогнозы идут как раньше.")
+        return "\n".join(lines)
+
+    if not positions:
+        lines.append("")
+        lines.append("Открытых позиций нет.")
+        return "\n".join(lines)
+
+    lines.append("")
+    for position in positions:
+        lines.append(position.as_telegram_line())
+
+    total = getattr(snapshot, "total_value", None)
+    if total:
+        lines.append("")
+        lines.append(f"Итого: <b>{_money(total)}</b>")
+    return "\n".join(lines)
+
+
+def format_predictions_check(results: list[dict[str, Any]]) -> str:
+    """Итог ежедневной проверки идей (Часть 3)."""
+    hits = sum(1 for item in results if item.get("hit") == 1)
+    misses = sum(1 for item in results if item.get("hit") == 0)
+
+    lines: list[str] = ["🔍 <b>Проверка идей</b>", ""]
+    for item in results:
+        if item.get("hit") == 1:
+            icon = "✅"
+        elif item.get("hit") == 0:
+            icon = "❌"
+        else:
+            icon = "👀"
+        change = item.get("change_pct")
+        change_text = f"{change:+.1f}%" if isinstance(change, (int, float)) else "—"
+        lines.append(
+            f"{icon} {esc(item.get('ticker'))} — {esc(item.get('direction'))} → "
+            f"{esc(item.get('realized_direction'))} ({change_text})"
+        )
+
+    lines.append("")
+    lines.append(f"Итог: сбылось {hits}, не сбылось {misses} из {len(results)}")
+    return "\n".join(lines)

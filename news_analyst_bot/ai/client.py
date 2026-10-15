@@ -140,8 +140,15 @@ class DeepSeekClient:
         moex_value: float,
         moex_change: float,
         usdrub: float,
+        cnyrub: float | None = None,
+        eurrub: float | None = None,
+        portfolio_text: str = "",
     ) -> DeepSeekResult:
-        """Отправляет дайджест в DeepSeek и возвращает разобранный прогноз."""
+        """Отправляет дайджест в DeepSeek и возвращает разобранный прогноз.
+
+        cnyrub/eurrub — дополнительные курсы ЦБ (Часть 1), portfolio_text — блок
+        открытых позиций Tinkoff (Часть 4). Оба параметра необязательные.
+        """
         if not config.DEEPSEEK_API_KEY:
             logger.error("DEEPSEEK_API_KEY не задан — вызов DeepSeek невозможен")
             return DeepSeekResult(status="error:no_api_key", error="no_api_key")
@@ -154,6 +161,9 @@ class DeepSeekClient:
             moex_value=moex_value,
             moex_change=moex_change,
             usdrub=usdrub,
+            cnyrub=cnyrub,
+            eurrub=eurrub,
+            portfolio_text=portfolio_text,
         )
 
         attempts = config.DEEPSEEK_RETRIES + 1

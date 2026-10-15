@@ -1,7 +1,9 @@
-"""Хендлеры Telegram-команд: /start, /now, /last, /stats, /schedule, /help."""
+"""Хендлеры Telegram-команд: /start, /now, /last, /stats, /accuracy, /portfolio,
+/schedule, /help."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Router
@@ -23,6 +25,8 @@ HELP_TEXT = "\n".join(
         "/now — запустить анализ немедленно, вне расписания",
         "/last — последний прогноз из базы",
         "/stats — статистика за 7 дней",
+        "/accuracy — точность прогнозов за 30 дней",
+        "/portfolio — текущие позиции Tinkoff (только чтение)",
         "/schedule — расписание и время следующего запуска",
         "/help — этот список",
     ]
@@ -75,6 +79,24 @@ async def cmd_stats(message: Message) -> None:
     logger.info("Команда /stats от chat_id=%s", message.chat.id)
     stats = db.get_stats(days=7)
     await message.answer(notifier.format_stats(stats), disable_web_page_preview=True)
+
+
+@router.message(Command("accuracy"))
+async def cmd_accuracy(message: Message) -> None:
+    """Точность прогнозов за 30 дней (Часть 3)."""
+    logger.info("Команда /accuracy от chat_id=%s", message.chat.id)
+    stats = await asyncio.to_thread(db.get_prediction_stats)
+    await message.answer(notifier.format_accuracy(stats), disable_web_page_preview=True)
+
+
+@router.message(Command("portfolio"))
+async def cmd_portfolio(message: Message) -> None:
+    """Снимок позиций Tinkoff без анализа — удобно для проверки API (Часть 4)."""
+    logger.info("Команда /portfolio от chat_id=%s", message.chat.id)
+    await message.answer("💼 Запрашиваю портфель Tinkoff…", disable_web_page_preview=True)
+    # force=True: ручной запрос всегда мимо 5-минутного кэша
+    snapshot = await asyncio.to_thread(jobs.get_portfolio_snapshot, True)
+    await message.answer(notifier.format_portfolio(snapshot), disable_web_page_preview=True)
 
 
 @router.message(Command("schedule"))

@@ -1,0 +1,10 @@
+# Секреты и рабочие артефакты Node-версии бота
+.env
+node_modules/
+bot.log
+*.zip
+
+# Базы SQLite (рабочая и тестовая)
+news_bot.sqlite3
+tests/_smoke.sqlite3
+tests/_smoke.log

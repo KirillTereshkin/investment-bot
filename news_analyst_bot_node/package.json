@@ -1,0 +1,20 @@
+{
+  "name": "news-analyst-bot-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram-бот-аналитик российского рынка (RSS -> DeepSeek -> Telegram): порт проекта news_analyst_bot с Python на Node.js",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "main.js",
+  "scripts": {
+    "start": "node --experimental-sqlite --disable-warning=ExperimentalWarning main.js",
+    "smoke": "node --experimental-sqlite --disable-warning=ExperimentalWarning smoke_test.js",
+    "smoke:live": "node --experimental-sqlite --disable-warning=ExperimentalWarning smoke_test.js --live"
+  },
+  "dependencies": {
+    "dotenv": "^17.0.0",
+    "fast-xml-parser": "^5.0.0"
+  }
+}

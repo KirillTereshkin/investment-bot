@@ -1,0 +1,7 @@
+# Зависимости проекта news_analyst_bot (Python 3.11+)
+aiogram==3.15.0
+openai==1.61.0
+feedparser==6.0.11
+APScheduler==3.11.0
+python-dotenv==1.0.1
+requests==2.32.3

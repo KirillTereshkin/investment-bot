@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import requests
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -826,11 +827,13 @@ def _install_fake_tinkoff_sdk() -> Any:
 
 
 def test_tinkoff_with_fake_sdk() -> None:
-    """Часть 4: разбор позиций, кэш в SQLite, статусы ошибок (реальная библиотека не нужна)."""
+    """Часть 4: SDK-транспорт, разбор позиций, кэш в SQLite, статусы (реальная библиотека не нужна)."""
     original_token = config.TINKOFF_INVEST_TOKEN
     original_retries = config.TINKOFF_RETRIES
     original_delay = config.TINKOFF_RETRY_DELAY_SEC
+    original_transport = config.TINKOFF_TRANSPORT
     config.TINKOFF_INVEST_TOKEN = "t.test-token"
+    config.TINKOFF_TRANSPORT = "sdk"      # проверяется опциональный gRPC-путь
     config.TINKOFF_RETRIES = 0            # в тесте без 3-секундных пауз
     config.TINKOFF_RETRY_DELAY_SEC = 0
     tinkoff.reset_client()
@@ -919,18 +922,21 @@ def test_tinkoff_with_fake_sdk() -> None:
         sys.modules.pop("tinkoff.invest", None)
         sys.modules.pop("tinkoff", None)
         config.TINKOFF_INVEST_TOKEN = original_token
+        config.TINKOFF_TRANSPORT = original_transport
         config.TINKOFF_RETRIES = original_retries
         config.TINKOFF_RETRY_DELAY_SEC = original_delay
         tinkoff.reset_client()
 
     # Библиотека физически отсутствует: статус вместо исключения
     config.TINKOFF_INVEST_TOKEN = "t.test-token"
+    config.TINKOFF_TRANSPORT = "sdk"       # недоступный SDK-транспорт не должен ронять бота
     config.TINKOFF_RETRIES = 0
     tinkoff.reset_client()
     try:
         missing = tinkoff.get_portfolio_snapshot(force=True)
     finally:
         config.TINKOFF_INVEST_TOKEN = original_token
+        config.TINKOFF_TRANSPORT = original_transport
         config.TINKOFF_RETRIES = original_retries
         tinkoff.reset_client()
     check(
@@ -940,6 +946,229 @@ def test_tinkoff_with_fake_sdk() -> None:
         and bool(missing.status_text()),
         f"{missing.status}: {missing.status_text()}",
     )
+
+
+class _FakeRestResponse:
+    """Мини-ответ requests: status_code + тело (dict отдаётся через .json())."""
+
+    def __init__(self, status_code: int, payload: Any = None) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload) if payload is not None else ""
+
+    def json(self) -> Any:
+        if self._payload is None:
+            raise ValueError("тело ответа не JSON")
+        return self._payload
+
+
+class _FakeRestSession:
+    """Поддельная requests.Session: журнал запросов + ответ из handler(url, payload)."""
+
+    def __init__(self, handler: Any) -> None:
+        self.handler = handler
+        self.headers: dict[str, str] = {}
+        self.calls: list[tuple[str, dict[str, Any], dict[str, str], Any]] = []
+        self.closed = False
+
+    def post(self, url: str, json: Any = None, headers: Any = None, timeout: Any = None) -> Any:
+        body = json if isinstance(json, dict) else {}
+        self.calls.append((url, body, dict(headers or {}), timeout))
+        return self.handler(url, body)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+# Ответы gRPC-gateway: int64 (`units`) приходят СТРОКАМИ, имена полей — camelCase
+REST_ACCOUNTS_PAYLOAD: dict[str, Any] = {
+    "accounts": [
+        {
+            "id": "acc-rest",
+            "type": "ACCOUNT_TYPE_TINKOFF",
+            "status": "ACCOUNT_STATUS_OPEN",
+            "accessLevel": "ACCOUNT_ACCESS_LEVEL_FULL_ACCESS",
+        }
+    ]
+}
+REST_PORTFOLIO_PAYLOAD: dict[str, Any] = {
+    "totalPortfolioValue": {"currency": "rub", "units": "45230", "nano": 0},
+    "positions": [
+        {
+            "figi": "BBG_REST_1",
+            "instrumentUid": "uid-REST-1",
+            "instrumentType": "share",
+            "ticker": "SBER",
+            "quantity": {"units": "100", "nano": 0},
+            "averagePositionPrice": {"currency": "rub", "units": "285", "nano": 500000000},
+            "currentPrice": {"currency": "rub", "units": "292", "nano": 300000000},
+        },
+        {
+            "figi": "BBG_REST_2",
+            "instrumentUid": "uid-REST-2",
+            "instrumentType": "bond",
+            "quantity": {"units": "5", "nano": 0},
+            "averagePositionPrice": {"currency": "rub", "units": "1000", "nano": 0},
+            "currentPrice": {"currency": "rub", "units": "1010", "nano": 0},
+        },
+    ],
+}
+REST_INSTRUMENT_PAYLOAD: dict[str, Any] = {
+    "instrument": {"figi": "BBG_REST_2", "ticker": "OFZ-REST", "name": "ОФЗ тест"}
+}
+
+
+def _rest_handler(url: str, payload: dict[str, Any]) -> Any:
+    """Правдоподобные ответы REST T-Invest API (только read-only методы)."""
+    if "UsersService/GetAccounts" in url:
+        return _FakeRestResponse(200, REST_ACCOUNTS_PAYLOAD)
+    if "OperationsService/GetPortfolio" in url:
+        return _FakeRestResponse(200, REST_PORTFOLIO_PAYLOAD)
+    if "InstrumentsService/GetInstrumentBy" in url:
+        return _FakeRestResponse(200, REST_INSTRUMENT_PAYLOAD)
+    return _FakeRestResponse(404, {"message": f"нет метода {url}"})
+
+
+def test_tinkoff_rest_transport() -> None:
+    """REST T-Invest API: proto3-JSON, кэш, статусы ошибок, резервный хост — без сети."""
+    original_token = config.TINKOFF_INVEST_TOKEN
+    original_transport = config.TINKOFF_TRANSPORT
+    original_retries = config.TINKOFF_RETRIES
+    original_delay = config.TINKOFF_RETRY_DELAY_SEC
+    config.TINKOFF_INVEST_TOKEN = "t.rest-token"
+    config.TINKOFF_TRANSPORT = "rest"
+    config.TINKOFF_RETRIES = 0
+    config.TINKOFF_RETRY_DELAY_SEC = 0
+    tinkoff.reset_client()
+
+    session = _FakeRestSession(_rest_handler)
+    client = tinkoff.TinkoffPortfolioClient(
+        "t.rest-token", transport=tinkoff.RestTransport("t.rest-token", session=session)
+    )
+    try:
+        snapshot = client.get_portfolio_snapshot(force=True)
+
+        check("tinkoff REST: снимок получен", snapshot.status == tinkoff.STATUS_OK, snapshot.status_text())
+        check("tinkoff REST: позиции разобраны", len(snapshot.positions) == 2, str(len(snapshot.positions)))
+        check("tinkoff REST: тикер взят из позиции", snapshot.positions[0].ticker == "SBER")
+        check(
+            "tinkoff REST: FIGI→тикер через GetInstrumentBy",
+            snapshot.positions[1].ticker == "OFZ-REST",
+            snapshot.positions[1].ticker,
+        )
+        check(
+            "tinkoff REST: количество из строки «100»",
+            abs(snapshot.positions[0].quantity - 100) < 1e-9,
+            str(snapshot.positions[0].quantity),
+        )
+        check(
+            "tinkoff REST: средняя цена units+nano",
+            abs((snapshot.positions[0].average_price or 0) - 285.5) < 1e-6,
+            str(snapshot.positions[0].average_price),
+        )
+        check("tinkoff REST: стоимость портфеля", snapshot.total_value == 45230.0, str(snapshot.total_value))
+        check("tinkoff REST: выбран брокерский счет", snapshot.account_id == "acc-rest", str(snapshot.account_id))
+        check(
+            "tinkoff REST: строка статуса",
+            snapshot.status_text() == "💼 Tinkoff: ok | 2 позиции, 45 230 ₽",
+            snapshot.status_text(),
+        )
+        check(
+            "tinkoff REST: заголовок Authorization: Bearer",
+            bool(session.calls) and all(c[2].get("Authorization") == "Bearer t.rest-token" for c in session.calls),
+        )
+        check(
+            "tinkoff REST: вызываются только три read-only метода",
+            [call[0].rsplit("/", 1)[-1] for call in session.calls]
+            == ["GetAccounts", "GetPortfolio", "GetInstrumentBy"],
+            str([call[0].rsplit("/", 1)[-1] for call in session.calls]),
+        )
+        check(
+            "tinkoff REST: FIGI→тикер попал в кэш SQLite",
+            "BBG_REST_2" in (db.cache_get(tinkoff.CACHE_KEY_FIGI_MAP) or {}),
+        )
+        check(
+            "tinkoff REST: кэш позиций в SQLite",
+            isinstance(db.cache_get(tinkoff.CACHE_KEY_PORTFOLIO), dict),
+        )
+
+        def snapshot_with(handler_fn: Any, retries: int = 0) -> tuple[Any, _FakeRestSession]:
+            """Снимок на поддельной сессии; один хост — чтобы точно считать попытки."""
+            config.TINKOFF_RETRIES = retries
+            fake = _FakeRestSession(handler_fn)
+            transport = tinkoff.RestTransport("t.rest-token", ["https://api.test"], fake)
+            result = tinkoff.TinkoffPortfolioClient(
+                "t.rest-token", transport
+            ).get_portfolio_snapshot(force=True)
+            return result, fake
+
+        expired, _ = snapshot_with(
+            lambda url, payload: _FakeRestResponse(401, {"code": 16, "description": "40003"})
+        )
+        check(
+            "tinkoff REST: 401 + 40003 → токен истёк",
+            expired.status == tinkoff.STATUS_TOKEN_EXPIRED and "токен истёк" in expired.status_text(),
+            expired.status_text(),
+        )
+
+        limited, _ = snapshot_with(
+            lambda url, payload: _FakeRestResponse(429, {"code": 8, "message": "RESOURCE_EXHAUSTED"})
+        )
+        check(
+            "tinkoff REST: 429 → лимит запросов",
+            limited.status == tinkoff.STATUS_RATE_LIMITED and limited.positions == [],
+            limited.status_text(),
+        )
+
+        def _timeout_handler(url: str, payload: dict[str, Any]) -> Any:
+            raise requests.exceptions.Timeout("connect timeout")
+
+        timed_out, _ = snapshot_with(_timeout_handler)
+        check(
+            "tinkoff REST: timeout → статус timeout",
+            timed_out.status == tinkoff.STATUS_TIMEOUT,
+            timed_out.status_text(),
+        )
+
+        unreliable, retry_session = snapshot_with(
+            lambda url, payload: _FakeRestResponse(503, {"message": "unavailable"}), retries=1
+        )
+        check(
+            "tinkoff REST: 503 повторяется (2 попытки)",
+            len(retry_session.calls) == 2 and unreliable.status == tinkoff.STATUS_ERROR,
+            f"{len(retry_session.calls)} попыток, {unreliable.status}",
+        )
+
+        seen_hosts: list[str] = []
+
+        def _failover_handler(url: str, payload: dict[str, Any]) -> Any:
+            seen_hosts.append(url)
+            if url.startswith("https://primary.test"):
+                raise requests.exceptions.ConnectionError("нет маршрута")
+            return _rest_handler(url, payload)
+
+        failover_session = _FakeRestSession(_failover_handler)
+        failover_transport = tinkoff.RestTransport(
+            "t.rest-token", ["https://primary.test", "https://backup.test"], failover_session
+        )
+        failover_snapshot = tinkoff.TinkoffPortfolioClient(
+            "t.rest-token", failover_transport
+        ).get_portfolio_snapshot(force=True)
+        check(
+            "tinkoff REST: сбой основного хоста → резервный",
+            failover_snapshot.ok and failover_transport._base_urls[0] == "https://backup.test",
+            str(seen_hosts),
+        )
+        check("tinkoff REST: хост переехал в конец списка", failover_transport._base_urls[1] == "https://primary.test")
+        failover_session.close()
+        check("tinkoff REST: закрытие сессии транспортом", failover_session.closed is True)
+
+    finally:
+        config.TINKOFF_INVEST_TOKEN = original_token
+        config.TINKOFF_TRANSPORT = original_transport
+        config.TINKOFF_RETRIES = original_retries
+        config.TINKOFF_RETRY_DELAY_SEC = original_delay
+        tinkoff.reset_client()
 
 
 def test_notifier_new_blocks(window_end: datetime) -> None:
@@ -1322,6 +1551,7 @@ async def main() -> None:
     await test_check_predictions()
     test_tinkoff_without_token()
     test_tinkoff_with_fake_sdk()
+    test_tinkoff_rest_transport()
     await test_handlers()
     await test_notifier_send()
     await test_deepseek_without_key()

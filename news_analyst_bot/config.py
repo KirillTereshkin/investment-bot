@@ -89,6 +89,18 @@ CBR_KEY_RATE_CACHE_HOURS = 24                    # ставка меняется
 # Токен read-only: не может выставлять или отменять ордера. Только через .env.
 TINKOFF_INVEST_TOKEN: str | None = os.getenv("TINKOFF_INVEST_TOKEN")
 TINKOFF_ACCOUNT_ID: str | None = os.getenv("TINKOFF_ACCOUNT_ID")   # необязательно: иначе первый брокерский
+# Транспорт: rest — REST T-Invest API обычным requests (по умолчанию, без лишних
+# зависимостей), sdk — gRPC-библиотека tinkoff-investments, если она установлена вручную.
+# PyPI-пакет tinkoff-investments удалён, поэтому REST — основной путь, SDK — опция.
+TINKOFF_TRANSPORT = (os.getenv("TINKOFF_TRANSPORT") or "rest").strip().lower()
+# Хосты REST: основной (T-Bank) + резервный (Tinkoff). Перебираются при сетевом сбое.
+TINKOFF_API_HOST = (os.getenv("TINKOFF_API_HOST") or "https://invest-public-api.tbank.ru").rstrip("/")
+TINKOFF_API_BACKUP_HOSTS = [
+    host.strip().rstrip("/")
+    for host in (os.getenv("TINKOFF_API_BACKUP_HOSTS") or "https://invest-public-api.tinkoff.ru").split(",")
+    if host.strip()
+]
+TINKOFF_API_BASE_URLS = [TINKOFF_API_HOST, *TINKOFF_API_BACKUP_HOSTS]
 TINKOFF_POSITIONS_CACHE_TTL_SEC = 300             # 5 минут
 TINKOFF_FIGI_CACHE_TTL_SEC = 604800               # FIGI→тикер практически не меняется (7 суток)
 TINKOFF_RETRIES = 2                               # число ПОВТОРНЫХ попыток

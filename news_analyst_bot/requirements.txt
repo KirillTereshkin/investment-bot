@@ -7,9 +7,10 @@ python-dotenv==1.0.1
 requests==2.32.3
 
 # --- Tinkoff Invest, только чтение (Часть 4) ---------------------------------
-# Нужна только для блока «По вашим позициям» в прогнозе и команды /portfolio.
-# Без этой библиотеки бот работает полностью: просто пишет в статусе
-# «💼 Tinkoff: ⏭️ библиотека не установлена» и не учитывает позиции.
-# Если пакет недоступен в вашем окружении (PyPI/зеркало) — закомментируйте строку,
-# бот продолжит работать; альтернатива — MCP-сервер t-bank-invest-mcp-read-only (uvx).
-tinkoff-investments>=0.2.0b0
+# Отдельная библиотека НЕ нужна: позиции читаются REST-методами T-Invest API
+# (UsersService/GetAccounts, OperationsService/GetPortfolio) обычным requests,
+# который уже есть выше. Работают и блок «По вашим позициям», и команда /portfolio.
+# PyPI-пакет tinkoff-investments удалён (репозиторий RussianInvestments/invest-python
+# переведён в архив), поэтому в requirements его больше нет.
+# Если gRPC-SDK у вас уже установлен — можно переключиться на него: TINKOFF_TRANSPORT=sdk
+#   pip install git+https://github.com/RussianInvestments/invest-python.git

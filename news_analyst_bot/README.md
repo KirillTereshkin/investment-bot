@@ -43,7 +43,8 @@ check_predictions:
 * котировки необязательны: при недоступности MOEX ISS/ЦБ берутся последние значения из SQLite,
   затем fallback из `config.py` (с `WARNING` в лог);
 * Tinkoff опрашивается **только на чтение** (счета и позиции): ордера не выставляются и не отменяются.
-  Без токена или без библиотеки бот работает как раньше, просто без блока «По вашим позициям»;
+  Работает через REST T-Invest API обычным `requests` — отдельных библиотек не нужно.
+  Без токена или при недоступности API бот работает как раньше, просто без блока «По вашим позициям»;
 * анализ всегда один: `/now` во время планового прогона получит ответ «уже выполняется»;
 * если новостей за окно нет — DeepSeek не вызывается (экономия токенов);
 * любой ответ модели экранируется (`html.escape`), разметка Telegram безопасна;
@@ -65,10 +66,13 @@ pip install -r requirements.txt
 > `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` в текущем окне
 > или используйте `.\.venv\Scripts\python.exe` напрямую, без активации.
 
-> `tinkoff-investments` в `requirements.txt` нужен только для блока позиций и `/portfolio`.
-> Если пакет недоступен в вашем окружении (PyPI/зеркало) — закомментируйте строку: бот продолжит
-> работать и покажет в статусе «💼 Tinkoff: ⏭️ библиотека не установлена».
-> Альтернатива для позиций — MCP-сервер `t-bank-invest-mcp-read-only` (запуск через `uvx`).
+> Отдельная библиотека для Tinkoff больше не нужна: позиции читаются REST-методами T-Invest API
+> (`UsersService/GetAccounts`, `OperationsService/GetPortfolio`) обычным `requests`, который уже
+> есть в `requirements.txt`. PyPI-пакет `tinkoff-investments` удалён, репозиторий
+> `RussianInvestments/invest-python` переведён в архив — поэтому в `requirements.txt` его нет.
+> Без `TINKOFF_INVEST_TOKEN` бот работает как раньше, просто без блока «По вашим позициям».
+> Если gRPC-SDK у вас уже установлен (`pip install git+https://github.com/RussianInvestments/invest-python.git`),
+> можно переключиться на него: `TINKOFF_TRANSPORT=sdk` в `.env`.
 
 ## Настройка .env
 
@@ -84,6 +88,9 @@ notepad .env
 | `DEEPSEEK_API_KEY`     | да          | https://platform.deepseek.com/api_keys |
 | `TINKOFF_INVEST_TOKEN` | нет         | https://www.tinkoff.ru/invest/settings/api/ — токен **только для чтения** |
 | `TINKOFF_ACCOUNT_ID`   | нет         | id счёта, если нужно смотреть не первый брокерский |
+| `TINKOFF_TRANSPORT`    | нет         | `rest` (по умолчанию — обычный `requests`, без доп. библиотек) или `sdk` (нужна установленная вручную библиотека `tinkoff-investments`) |
+| `TINKOFF_API_HOST`     | нет         | основной хост REST API: `https://invest-public-api.tbank.ru` (значение по умолчанию) |
+| `TINKOFF_API_BACKUP_HOSTS` | нет     | резервные хосты через запятую: `https://invest-public-api.tinkoff.ru` — перебираются при сбое сети |
 
 Без первых трёх переменных `main.py` не стартует и печатает, чего именно не хватает.
 Без `TINKOFF_INVEST_TOKEN` бот просто не добавляет в промпт блок позиций.
@@ -160,13 +167,14 @@ notepad .env
 Особенности:
 
 * Telegram и DeepSeek из теста **не вызываются**: используется поддельная `Bot` с мок-сессией;
-* Tinkoff проверяется на фейковом SDK (`sys.modules`) — реальный токен и библиотека не нужны;
+* Tinkoff проверяется дважды: REST — на поддельной HTTP-сессии, SDK — на фейковом модуле
+  `sys.modules`; реальный токен и библиотека не нужны;
 * БД теста изолирована — `_smoke.sqlite3`, рабочий `news_bot.sqlite3` не трогается;
 * секция `live` реально ходит в RSS-источники и в MOEX ISS/ЦБ РФ, поэтому нужен интернет;
 * если в `.env` заполнен `DEEPSEEK_API_KEY`, сквозной тест сделает **один реальный запрос**
   к DeepSeek — уберите ключ, если не хотите тратить токены.
 
-Ожидаемый финал: `Выполнено проверок: 189` и `ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ`, код выхода `0`
+Ожидаемый финал: `Выполнено проверок: 209` и `ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ`, код выхода `0`
 (при `ПРОВАЛЕНО ПРОВЕРОК` код выхода `1`).
 Если консоль в cp1251 и тест падает на юникоде — запускайте командой `chcp 65001` перед стартом.
 
@@ -176,9 +184,9 @@ notepad .env
 news_analyst_bot/
 ├─ main.py              точка входа: логирование (rotating), БД, bot, scheduler, polling
 ├─ config.py            настройки и секреты (.env), fallback-котировки, хелперы времени МСК
-├─ requirements.txt     aiogram, openai, feedparser, APScheduler, requests, python-dotenv, tinkoff-investments
+├─ requirements.txt     aiogram, openai, feedparser, APScheduler, requests, python-dotenv
 ├─ .env.example         образец переменных окружения
-├─ _smoke_test.py       смоук-тест (189 проверок), запускается вручную
+├─ _smoke_test.py       смоук-тест (209 проверок), запускается вручную
 ├─ ai/
 │  ├─ prompts.py        системный промпт (правила 1–10), блок позиций, JSON-схема ответа
 │  └─ client.py         DeepSeek: JSON-режим, ретраи, парсинг ответа
@@ -188,7 +196,7 @@ news_analyst_bot/
 ├─ market/
 │  └─ quotes.py         ЦБ РФ (курсы, ключевая ставка 24 ч), MOEX ISS (IMOEX, цены тикеров)
 ├─ broker/
-│  └─ tinkoff.py        Tinkoff Invest, только чтение: счета, позиции, FIGI→тикер
+│  └─ tinkoff.py        Tinkoff Invest REST (или SDK), только чтение: счета, позиции, FIGI→тикер
 ├─ predictions/
 │  └─ horizon.py        горизонт идеи → дата проверки, оценка факта (±1%), hit/miss
 ├─ bot/
